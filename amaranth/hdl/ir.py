@@ -1,5 +1,5 @@
 from abc import ABCMeta
-from collections import defaultdict, OrderedDict, deque
+from collections import defaultdict, OrderedDict
 from functools import reduce
 import warnings
 
@@ -600,7 +600,7 @@ class CombGraphCompiler:
 
 
 def find_cycle(nodes, edges):
-    edge_list = [deque() for _ in edges]
+    edge_list = [[] for _ in edges]
     for [neighbour, node] in edges:
         edge_list[node].append(neighbour)
 
