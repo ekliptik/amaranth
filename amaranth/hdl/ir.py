@@ -1,5 +1,5 @@
 from abc import ABCMeta
-from collections import defaultdict, OrderedDict
+from collections import defaultdict, OrderedDict, deque
 from functools import reduce
 import warnings
 
@@ -555,7 +555,71 @@ class Fragment:
                 if cd.rst is not None:
                     mapped_ports.append(cd.rst)
             fragment._propagate_ports(ports=mapped_ports, all_undef_as_ports=False)
+        (edges, node_cnt) = CombGraphCompiler(CombGraphCtx())(fragment)
+        if find_cycle(range(node_cnt), list(edges)):
+            raise DomainError("Combinational loop detected")
+
         return fragment
+
+
+class CombGraphCtx:
+    def __init__(self):
+        self.signals  = SignalDict()
+        self.next_idx = 0
+
+    def get_signal(self, signal):
+        try:
+            return self.signals[signal]
+        except KeyError:
+            index = self.next_idx
+            self.next_idx += 1
+            self.signals[signal] = index
+            return index
+
+
+class CombGraphCompiler:
+    def __init__(self, state):
+        self.state = state
+
+    def _edges(self, fragment):
+        from .xfrm import LHSGroupFilter, AssignmentGraphBuilder
+        comb_edges = set()
+        comb_signals = fragment.drivers[None]
+        stmts = LHSGroupFilter(comb_signals)(fragment.statements)
+        for signal in comb_signals:
+            _ = self.state.get_signal(signal)
+        graph_builder = AssignmentGraphBuilder(self.state)
+        graph_builder(stmts)
+        comb_edges.update(graph_builder.edges)
+        for _, (subfragment, _) in enumerate(fragment.subfragments):
+            comb_edges.update(self._edges(subfragment))
+        return comb_edges
+
+    def __call__(self, fragment):
+        return (self._edges(fragment), self.state.next_idx)
+
+
+def find_cycle(nodes, edges):
+    edge_list = [deque() for _ in edges]
+    for [neighbour, node] in edges:
+        edge_list[node].append(neighbour)
+
+    def DFS(source, path):
+        if source in path:
+            return True
+        elif not visited[source]:
+            visited[source] = True
+            neighbours = edge_list[source]
+            for n in neighbours:
+                node_path = path.union([source])
+                if DFS(n, node_path):
+                    return True
+
+    visited = [False] * len(nodes)
+    for node in nodes:
+        if DFS(node, set()):
+            return True
+    return False
 
 
 class Instance(Fragment):

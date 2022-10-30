@@ -741,3 +741,87 @@ class EnableInserter(_ControlInserter):
                 en_port = Mux(self.controls[clk_port.domain], en_port, Const(0, len(en_port)))
                 new_fragment.named_ports["EN"] = en_port, en_dir
         return new_fragment
+
+
+class ValueSignalExtractor(ValueVisitor):
+    def __init__(self):
+        self.sigs = []
+
+    def on_ignore(self, value):
+        pass
+
+    on_Const = on_ignore
+    on_AnyConst = on_Const
+    on_AnySeq = on_Const
+    on_ClockSignal = on_Const
+    on_ResetSignal = on_Const
+    on_Sample = on_Const
+
+    def on_recurse(self, value):
+        self.on_value(value.value)
+
+    on_Part = on_recurse
+    on_Slice = on_recurse
+    on_Repl = on_recurse
+
+    def on_Signal(self, value):
+        self.sigs.append(value)
+
+    def on_Operator(self, value):
+        for o in value.operands:
+            self.on_value(o)
+
+    def on_Cat(self, value):
+        for o in value.parts:
+            self.on_value(o)
+
+    def on_ArrayProxy(self, value):
+        self.on_value(value.index)
+        for elem in value.elems:
+            self.on_value(elem)
+
+    def on_Initial(self, value):
+        self.on_Signal(value)
+
+
+class AssignmentGraphBuilder(StatementVisitor):
+    def __init__(self, state):
+        self.edges = []
+        self.control_stack = []
+        self.state = state
+
+    def on_ignore(self, stmt):
+        return None
+
+    on_Assert = on_ignore
+    on_Assume = on_ignore
+    on_Cover  = on_ignore
+
+    def on_value(self, value):
+        sigs = ValueSignalExtractor()
+        sigs(value)
+        return sigs.sigs
+
+    def on_Assign(self, stmt):
+        def get_ids(sigs):
+            return map(self.state.get_signal, sigs)
+        for driver in set(get_ids(self.on_value(stmt.rhs))):
+            self.edges.append((driver, self.state.get_signal(stmt.lhs)))
+        for control_sig in set(get_ids(self.control_stack)):
+            self.edges.append((control_sig, self.state.get_signal(stmt.lhs)))
+
+    def on_Switch(self, stmt):
+        control_sigs = ValueSignalExtractor()
+        control_sigs(stmt.test)
+        for sig in control_sigs.sigs:
+            self.control_stack.append(sig)
+
+        for case_stmts in stmt.cases.values():
+            self.on_statements(case_stmts)
+
+        for _ in control_sigs.sigs:
+            self.control_stack.pop()
+
+    def on_statements(self, stmts):
+        for stmt in stmts:
+            self.on_statement(stmt)
