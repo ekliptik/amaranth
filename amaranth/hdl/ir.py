@@ -530,6 +530,11 @@ class Fragment:
         fragment = SampleLowerer()(self)
         new_domains = fragment._propagate_domains(missing_domain)
         fragment = DomainLowerer()(fragment)
+        ctx = CombGraphCtx()
+        (edges, node_cnt) = CombGraphCompiler(ctx)(fragment)
+        loop = find_loop(range(node_cnt), list(edges))
+        if loop:
+            raise DomainError(format_loop(loop, ctx))
         if ports is None:
             fragment._propagate_ports(ports=(), all_undef_as_ports=True)
         else:
@@ -555,9 +560,6 @@ class Fragment:
                 if cd.rst is not None:
                     mapped_ports.append(cd.rst)
             fragment._propagate_ports(ports=mapped_ports, all_undef_as_ports=False)
-        (edges, node_cnt) = CombGraphCompiler(CombGraphCtx())(fragment)
-        if find_cycle(range(node_cnt), list(edges)):
-            raise DomainError("Combinational loop detected")
 
         return fragment
 
@@ -584,7 +586,10 @@ class CombGraphCompiler:
     def _edges(self, fragment):
         from .xfrm import LHSGroupFilter, AssignmentGraphBuilder
         comb_edges = set()
-        comb_signals = fragment.drivers[None]
+        try:
+            comb_signals = fragment.drivers[None]
+        except KeyError:
+            return set()
         stmts = LHSGroupFilter(comb_signals)(fragment.statements)
         for signal in comb_signals:
             _ = self.state.get_signal(signal)
@@ -599,27 +604,38 @@ class CombGraphCompiler:
         return (self._edges(fragment), self.state.next_idx)
 
 
-def find_cycle(nodes, edges):
-    edge_list = [[] for _ in edges]
+def find_loop(nodes, edges):
+    edge_list = [[] for _ in nodes]
     for [neighbour, node] in edges:
         edge_list[node].append(neighbour)
 
     def DFS(source, path):
         if source in path:
-            return True
+            loop = [source]
+            return loop
         elif not visited[source]:
             visited[source] = True
             neighbours = edge_list[source]
             for n in neighbours:
-                node_path = path.union([source])
-                if DFS(n, node_path):
-                    return True
+                loop = DFS(n, path.union([source]))
+                if loop:
+                    return loop + [source]
+        return []
 
     visited = [False] * len(nodes)
     for node in nodes:
-        if DFS(node, set()):
-            return True
-    return False
+        loop = DFS(node, set())
+        if loop:
+            return loop
+    return []
+
+
+def format_loop(loop, ctx):
+    s = "Combinational loop detected: "
+    for sig, id in ctx.signals.items():
+        if id in loop:
+            s += f"{sig.name},"
+    return s[:-1]
 
 
 class Instance(Fragment):
